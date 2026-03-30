@@ -225,6 +225,7 @@ class TaskerConnectPlugin(Star):
     async def _wait_for_battery_reply(self, request_id: str) -> dict | None:
         """Poll battery reply topic and return parsed JSON payload for the request id."""
         if not self._battery_reply_topic:
+            logger.error("battery_reply_topic not configured")
             return None
 
         topic_escaped = quote(self._battery_reply_topic, safe="")
@@ -237,17 +238,21 @@ class TaskerConnectPlugin(Star):
         deadline = time.monotonic() + self._battery_wait_timeout_sec
         logger.info(
             f"waiting battery reply: request_id={request_id}, "
-            f"topic={self._battery_reply_topic}, timeout={self._battery_wait_timeout_sec}s"
+            f"topic={self._battery_reply_topic}, url={url}, timeout={self._battery_wait_timeout_sec}s"
         )
 
         poll_id = None
+        seen_ids = set()
         async with httpx.AsyncClient(
             timeout=max(5, self._battery_wait_timeout_sec + 2)
         ) as client:
             while True:
                 remain = int(deadline - time.monotonic())
                 if remain <= 0:
-                    logger.warning(f"battery reply timeout: request_id={request_id}")
+                    logger.warning(
+                        f"battery reply timeout: request_id={request_id}, "
+                        f"seen {len(seen_ids)} messages but none matched"
+                    )
                     return None
 
                 poll_timeout = min(10, remain)
@@ -260,6 +265,7 @@ class TaskerConnectPlugin(Star):
 
                 try:
                     resp = await client.get(url, params=params, headers=headers)
+                    logger.debug(f"polling response: status={resp.status_code}")
                 except Exception as e:
                     logger.error(f"battery reply poll exception: {e}")
                     return None
@@ -278,33 +284,48 @@ class TaskerConnectPlugin(Star):
 
                 try:
                     data = resp.json()
-                except Exception:
+                    logger.debug(f"polling response data: {str(data)[:300]}")
+                except Exception as e:
                     logger.warning(
-                        f"battery reply parse failed: non-json body={resp.text[:200]}"
+                        f"battery reply parse failed: non-json body={resp.text[:200]}, error={e}"
                     )
                     continue
 
                 # Handle both single message and multi-message responses
                 messages = data if isinstance(data, list) else [data]
+                logger.debug(f"processing {len(messages)} messages from polling")
 
-                for evt in messages:
+                for idx, evt in enumerate(messages):
                     if not isinstance(evt, dict):
+                        logger.debug(f"message #{idx} is not dict: {type(evt)}")
                         continue
 
+                    evt_id = evt.get("id", "?")
+                    evt_type = evt.get("event", "unknown")
+                    logger.debug(f"message #{idx} id={evt_id}, event={evt_type}")
+
                     if evt.get("event") != "message":
-                        logger.debug(f"battery reply ignored event: {evt.get('event')}")
+                        logger.debug(
+                            f"battery reply ignored event: {evt_type} (expected 'message')"
+                        )
                         continue
 
                     message = evt.get("message", "")
+                    if not message:
+                        logger.debug(f"message #{idx} has empty message field")
+                        continue
+
+                    logger.debug(f"parsing message: {message[:200]}")
                     try:
                         payload = json.loads(message)
-                    except Exception:
+                    except Exception as e:
                         logger.debug(
-                            f"battery reply ignored non-json message: {message[:120]}"
+                            f"battery reply ignored non-json message: {message[:120]}, error={e}"
                         )
                         continue
 
                     if not isinstance(payload, dict):
+                        logger.debug(f"parsed payload is not dict: {type(payload)}")
                         continue
 
                     data_dict = (
@@ -315,6 +336,13 @@ class TaskerConnectPlugin(Star):
                     msg_request_id = data_dict.get("request_id") or payload.get(
                         "request_id"
                     )
+                    seen_ids.add(msg_request_id)
+
+                    logger.debug(
+                        f"message payload: action={payload.get('action')}, "
+                        f"request_id={msg_request_id}, want_request_id={request_id}"
+                    )
+
                     if msg_request_id != request_id:
                         logger.debug(
                             f"battery reply ignored by request_id mismatch: "
@@ -322,7 +350,10 @@ class TaskerConnectPlugin(Star):
                         )
                         continue
 
-                    logger.info(f"battery reply matched: request_id={request_id}")
+                    logger.info(
+                        f"battery reply matched: request_id={request_id}, "
+                        f"action={payload.get('action')}"
+                    )
                     return payload
 
     @llm_tool(name="tasker_set_alarm")

@@ -117,7 +117,9 @@ class TaskerConnectPlugin(Star):
             # AMap may return multiple converted points joined by ';'.
             first_point = locations.split(";", maxsplit=1)[0].strip()
             if "," not in first_point:
-                logger.warning(f"amap coord convert invalid locations format: {locations}")
+                logger.warning(
+                    f"amap coord convert invalid locations format: {locations}"
+                )
                 return None
 
             lon_s, lat_s = first_point.split(",", maxsplit=1)
@@ -384,13 +386,24 @@ class TaskerConnectPlugin(Star):
 
         data = reply.get("data") if isinstance(reply.get("data"), dict) else {}
         level = data.get("level", data.get("battery", "未知"))
-        is_charging = data.get("is_charging", data.get("charging", None))
+        status = data.get("status", data.get("battery_status", None))
 
-        charging_text = "未知"
-        if isinstance(is_charging, bool):
-            charging_text = "充电中" if is_charging else "未充电"
+        # 电池状态映射表
+        status_map = {
+            1: "未知",
+            2: "充电中",
+            3: "放电",
+            4: "未充电",
+            5: "满电",
+        }
 
-        return f"设备当前电量：{level}%（{charging_text}）"
+        status_text = "未知"
+        if isinstance(status, int) and status in status_map:
+            status_text = status_map[status]
+        elif isinstance(status, str):
+            status_text = status
+
+        return f"设备当前电量：{level}%（{status_text}）"
 
     @llm_tool(name="tasker_get_location")
     async def tasker_get_location(self, event: AstrMessageEvent) -> str:

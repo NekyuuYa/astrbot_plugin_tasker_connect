@@ -1,0 +1,35 @@
+{
+  "ntfy_server": {
+    "type": "string",
+    "description": "ntfy 服务地址。默认使用官方服务。",
+    "hint": "例如 https://ntfy.sh 或你的自建 ntfy 服务地址。",
+    "default": "https://ntfy.sh"
+  },
+  "ntfy_topic": {
+    "type": "string",
+    "description": "ntfy topic（建议使用高强度随机字符串，等同共享密钥）。",
+    "hint": "Android Tasker 端需订阅同一个 topic。",
+    "default": ""
+  },
+  "generate_random_topic_once": {
+    "type": "bool",
+    "description": "一键随机生成 ntfy_topic（单次触发）。",
+    "hint": "将此项设为 true 并保存后，重载插件会生成新 topic，随后自动重置为 false。",
+    "default": false
+  },
+  "random_topic_length": {
+    "type": "int",
+    "description": "随机 topic 长度（最小 16）。",
+    "default": 32
+  },
+  "ntfy_token": {
+    "type": "string",
+    "description": "可选 Bearer Token（自建 ntfy 或受限 topic 时使用）。",
+    "default": ""
+  },
+  "http_timeout_sec": {
+    "type": "int",
+    "description": "推送请求超时时间（秒）。",
+    "default": 10
+  }
+}

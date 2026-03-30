@@ -17,7 +17,7 @@ from astrbot.api.star import Context, Star, register
     "astrbot_plugin_tasker_connect",
     "Nekyuu",
     "基于 ntfy.sh 的系统级闹钟推送插件",
-    "2.0.0",
+    "2.0.1",
 )
 class TaskerConnectPlugin(Star):
     """Tasker ntfy 推送插件。"""

@@ -1,7 +1,7 @@
 name: astrbot_plugin_tasker_connect
 display_name: Tasker Connect
 desc: 基于 ntfy.sh 的系统级远程闹钟推送插件
-version: v2.0.0
+version: v2.0.1
 author: Nekyuu
 repo: https://github.com/Nekyuu/astrbot_plugin_tasker_connect
 astrbot_version: ">=4.16,<5"

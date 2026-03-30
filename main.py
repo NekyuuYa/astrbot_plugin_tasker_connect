@@ -240,6 +240,7 @@ class TaskerConnectPlugin(Star):
             f"topic={self._battery_reply_topic}, timeout={self._battery_wait_timeout_sec}s"
         )
 
+        poll_id = None
         async with httpx.AsyncClient(
             timeout=max(5, self._battery_wait_timeout_sec + 2)
         ) as client:
@@ -254,6 +255,8 @@ class TaskerConnectPlugin(Star):
                     "poll": "1",
                     "timeout": f"{poll_timeout}s",
                 }
+                if poll_id:
+                    params["poll"] = poll_id
 
                 try:
                     resp = await client.get(url, params=params, headers=headers)
@@ -267,43 +270,60 @@ class TaskerConnectPlugin(Star):
                     )
                     return None
 
+                # Extract poll ID from response headers for next iteration
+                new_poll_id = resp.headers.get("X-Poll-ID")
+                if new_poll_id:
+                    poll_id = new_poll_id
+                    logger.debug(f"updated poll_id: {poll_id}")
+
                 try:
-                    evt = resp.json()
+                    data = resp.json()
                 except Exception:
                     logger.warning(
                         f"battery reply parse failed: non-json body={resp.text[:200]}"
                     )
                     continue
 
-                if evt.get("event") != "message":
-                    logger.debug(f"battery reply ignored event: {evt.get('event')}")
-                    continue
+                # Handle both single message and multi-message responses
+                messages = data if isinstance(data, list) else [data]
 
-                message = evt.get("message", "")
-                try:
-                    payload = json.loads(message)
-                except Exception:
-                    logger.debug(
-                        f"battery reply ignored non-json message: {message[:120]}"
+                for evt in messages:
+                    if not isinstance(evt, dict):
+                        continue
+
+                    if evt.get("event") != "message":
+                        logger.debug(f"battery reply ignored event: {evt.get('event')}")
+                        continue
+
+                    message = evt.get("message", "")
+                    try:
+                        payload = json.loads(message)
+                    except Exception:
+                        logger.debug(
+                            f"battery reply ignored non-json message: {message[:120]}"
+                        )
+                        continue
+
+                    if not isinstance(payload, dict):
+                        continue
+
+                    data_dict = (
+                        payload.get("data")
+                        if isinstance(payload.get("data"), dict)
+                        else {}
                     )
-                    continue
-
-                if not isinstance(payload, dict):
-                    continue
-
-                data = (
-                    payload.get("data") if isinstance(payload.get("data"), dict) else {}
-                )
-                msg_request_id = data.get("request_id") or payload.get("request_id")
-                if msg_request_id != request_id:
-                    logger.debug(
-                        f"battery reply ignored by request_id mismatch: "
-                        f"want={request_id}, got={msg_request_id}"
+                    msg_request_id = data_dict.get("request_id") or payload.get(
+                        "request_id"
                     )
-                    continue
+                    if msg_request_id != request_id:
+                        logger.debug(
+                            f"battery reply ignored by request_id mismatch: "
+                            f"want={request_id}, got={msg_request_id}"
+                        )
+                        continue
 
-                logger.info(f"battery reply matched: request_id={request_id}")
-                return payload
+                    logger.info(f"battery reply matched: request_id={request_id}")
+                    return payload
 
     @llm_tool(name="tasker_set_alarm")
     async def tasker_set_alarm(

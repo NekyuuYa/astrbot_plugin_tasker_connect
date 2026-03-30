@@ -143,6 +143,37 @@
 - 建议 `ntfy_topic` 用于下发命令，`battery_reply_topic` 专门用于状态回传
 - 配置 `amap_api_key` 后，定位将自动调用高德坐标转换与逆地理编码，优先返回格式化地址
 
+### 消息未被接收常见问题排查
+
+1. **检查 Tasker 回传的消息格式**
+   - 确保 Tasker 发送的 `request_id` 与插件生成的一致
+   - 验证消息体格式：`{"action": "battery_status", "data": {"request_id": "xxx", ...}}`
+   - 消息的 `message` 字段必须是 JSON 字符串（不是对象），例如：`"message": "{\"action\":\"battery_status\",...}"`
+
+2. **检查回传 topic 配置**
+   - 确认 `battery_reply_topic` 已在插件配置中设置
+   - Tasker 必须推送到完全相同的 topic 名称
+   - 避免 topic 名称包含特殊字符或空格
+
+3. **检查网络连接**
+   - 确认 AstrBot 和 Tasker 都能访问 ntfy 服务器
+   - 在手机浏览器访问 `https://ntfy.sh/your_reply_topic/json` 测试连接
+   - 如果使用自建 ntfy，检查网络可达性和认证
+
+4. **检查日志**
+   - 查看 AstrBot 日志中是否有 `waiting battery reply` 的日志
+   - 如果看到 `battery reply poll exception` 或 `battery reply timeout`，表示 polling 超时
+   - 如果看到 `request_id mismatch`，说明消息到达但 request_id 不匹配
+
+5. **调试 ntfy 消息**
+   - 使用 curl 手动向 ntfy 推送测试消息：
+     ```bash
+     curl -X POST https://ntfy.sh/your_reply_topic \
+       -d '{"action": "battery_status", "data": {"request_id": "test123", "level": 85, "status": 2}}' \
+       -H "Content-Type: application/json"
+     ```
+   - 然后在手机上手动触发 `/电量查询` 命令，观察插件是否收到
+
 ### 一键随机 topic 使用方式
 
 1. 在插件设置中将 `generate_random_topic_once` 改为 `true` 并保存。

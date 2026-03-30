@@ -11,6 +11,12 @@
     "hint": "Android Tasker 端需订阅同一个 topic。",
     "default": ""
   },
+  "battery_reply_topic": {
+    "type": "string",
+    "description": "电量查询回传 topic（与 ntfy_topic 不同）。",
+    "hint": "Tasker 收到 get_battery 后，将电量结果推送到此 topic。",
+    "default": ""
+  },
   "generate_random_topic_once": {
     "type": "bool",
     "description": "一键随机生成 ntfy_topic（单次触发）。",
@@ -27,9 +33,26 @@
     "description": "可选 Bearer Token（自建 ntfy 或受限 topic 时使用）。",
     "default": ""
   },
+  "amap_api_key": {
+    "type": "string",
+    "description": "高德地图 Web 服务 API Key（用于坐标转换与逆地理编码）。",
+    "hint": "在高德开放平台申请 Key 后填入。留空则仅返回坐标或设备上报地址。",
+    "default": ""
+  },
+  "amap_coordsys": {
+    "type": "string",
+    "description": "定位回传的原坐标系。",
+    "options": ["gps", "mapbar", "baidu", "autonavi"],
+    "default": "gps"
+  },
   "http_timeout_sec": {
     "type": "int",
     "description": "推送请求超时时间（秒）。",
     "default": 10
+  },
+  "battery_wait_timeout_sec": {
+    "type": "int",
+    "description": "电量查询等待回传的最长时间（秒）。",
+    "default": 25
   }
 }

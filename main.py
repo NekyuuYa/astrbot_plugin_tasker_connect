@@ -3,12 +3,13 @@ from __future__ import annotations
 import json
 import secrets
 import string
+import time
 from urllib.parse import quote
 
 import httpx
 
 from astrbot.api import AstrBotConfig, llm_tool, logger
-from astrbot.api.event import AstrMessageEvent
+from astrbot.api.event import AstrMessageEvent, filter
 from astrbot.api.star import Context, Star, register
 
 
@@ -29,8 +30,14 @@ class TaskerConnectPlugin(Star):
             "/"
         )
         self._ntfy_topic = str(config.get("ntfy_topic", "")).strip()
+        self._battery_reply_topic = str(config.get("battery_reply_topic", "")).strip()
         self._ntfy_token = str(config.get("ntfy_token", "")).strip()
         self._http_timeout_sec = max(3, int(config.get("http_timeout_sec", 10)))
+        self._battery_wait_timeout_sec = max(
+            5, int(config.get("battery_wait_timeout_sec", 25))
+        )
+        self._amap_api_key = str(config.get("amap_api_key", "")).strip()
+        self._amap_coordsys = str(config.get("amap_coordsys", "gps")).strip() or "gps"
         self._topic_length = max(16, int(config.get("random_topic_length", 32)))
 
     async def initialize(self) -> None:
@@ -41,9 +48,14 @@ class TaskerConnectPlugin(Star):
             logger.warning(
                 "ntfy_topic is empty. tasker_set_alarm will fail until configured."
             )
+        if not self._battery_reply_topic:
+            logger.warning(
+                "battery_reply_topic is empty. tasker_get_battery will fail until configured."
+            )
         logger.info(
             f"Tasker ntfy plugin initialized. server={self._ntfy_server}, "
-            f"topic={'<empty>' if not self._ntfy_topic else self._ntfy_topic}"
+            f"topic={'<empty>' if not self._ntfy_topic else self._ntfy_topic}, "
+            f"battery_reply_topic={'<empty>' if not self._battery_reply_topic else self._battery_reply_topic}"
         )
 
     async def terminate(self) -> None:
@@ -55,9 +67,102 @@ class TaskerConnectPlugin(Star):
             self.config.get("ntfy_server", "https://ntfy.sh")
         ).rstrip("/")
         self._ntfy_topic = str(self.config.get("ntfy_topic", "")).strip()
+        self._battery_reply_topic = str(
+            self.config.get("battery_reply_topic", "")
+        ).strip()
         self._ntfy_token = str(self.config.get("ntfy_token", "")).strip()
         self._http_timeout_sec = max(3, int(self.config.get("http_timeout_sec", 10)))
+        self._battery_wait_timeout_sec = max(
+            5, int(self.config.get("battery_wait_timeout_sec", 25))
+        )
+        self._amap_api_key = str(self.config.get("amap_api_key", "")).strip()
+        self._amap_coordsys = (
+            str(self.config.get("amap_coordsys", "gps")).strip() or "gps"
+        )
         self._topic_length = max(16, int(self.config.get("random_topic_length", 32)))
+
+    async def _amap_convert_coord(
+        self, longitude: float, latitude: float
+    ) -> tuple[float, float] | None:
+        """Convert source coordinates to AMap standard coordinates."""
+        if not self._amap_api_key:
+            return None
+
+        amap_url = "https://restapi.amap.com/v3/assistant/coordinate/convert"
+        params = {
+            "key": self._amap_api_key,
+            "locations": f"{longitude:.6f},{latitude:.6f}",
+            "coordsys": self._amap_coordsys,
+            "output": "JSON",
+        }
+
+        try:
+            async with httpx.AsyncClient(timeout=self._http_timeout_sec) as client:
+                resp = await client.get(amap_url, params=params)
+            if resp.status_code >= 400:
+                logger.warning(f"amap coord convert http error: {resp.status_code}")
+                return None
+
+            data = resp.json()
+            if str(data.get("status")) != "1":
+                logger.warning(
+                    f"amap coord convert failed: info={data.get('info', 'unknown')}"
+                )
+                return None
+
+            locations = str(data.get("locations", "")).strip()
+            if not locations:
+                return None
+
+            # AMap may return multiple converted points joined by ';'.
+            first_point = locations.split(";", maxsplit=1)[0].strip()
+            if "," not in first_point:
+                logger.warning(f"amap coord convert invalid locations format: {locations}")
+                return None
+
+            lon_s, lat_s = first_point.split(",", maxsplit=1)
+            return float(lon_s), float(lat_s)
+        except Exception as e:
+            logger.warning(f"amap coord convert exception: {e}")
+            return None
+
+    async def _amap_reverse_geocode(
+        self, longitude: float, latitude: float
+    ) -> str | None:
+        """Resolve coordinates to a human-readable address via AMap regeo API."""
+        if not self._amap_api_key:
+            return None
+
+        amap_url = "https://restapi.amap.com/v3/geocode/regeo"
+        params = {
+            "key": self._amap_api_key,
+            "location": f"{longitude:.6f},{latitude:.6f}",
+            "extensions": "base",
+            "output": "JSON",
+        }
+
+        try:
+            async with httpx.AsyncClient(timeout=self._http_timeout_sec) as client:
+                resp = await client.get(amap_url, params=params)
+            if resp.status_code >= 400:
+                logger.warning(f"amap regeo http error: {resp.status_code}")
+                return None
+
+            data = resp.json()
+            if str(data.get("status")) != "1":
+                logger.warning(f"amap regeo failed: info={data.get('info', 'unknown')}")
+                return None
+
+            regeo = (
+                data.get("regeocode") if isinstance(data.get("regeocode"), dict) else {}
+            )
+            address = regeo.get("formatted_address") if isinstance(regeo, dict) else ""
+            if not address:
+                return None
+            return str(address)
+        except Exception as e:
+            logger.warning(f"amap regeo exception: {e}")
+            return None
 
     def _generate_topic_if_requested(self) -> None:
         """One-shot topic generator triggered by settings toggle."""
@@ -74,6 +179,129 @@ class TaskerConnectPlugin(Star):
         logger.info(
             f"Generated random ntfy_topic via settings toggle, len={self._topic_length}"
         )
+
+    def _build_ntfy_headers(self, title: str, tags: str) -> dict[str, str]:
+        headers = {
+            "Content-Type": "application/json; charset=utf-8",
+            "Title": title,
+            "Tags": tags,
+        }
+        if self._ntfy_token:
+            headers["Authorization"] = f"Bearer {self._ntfy_token}"
+        return headers
+
+    async def _post_ntfy_payload(
+        self,
+        topic: str,
+        payload: dict,
+        title: str,
+        tags: str,
+    ) -> tuple[bool, str]:
+        topic_escaped = quote(topic, safe="")
+        url = f"{self._ntfy_server}/{topic_escaped}"
+        headers = self._build_ntfy_headers(title=title, tags=tags)
+
+        logger.debug(f"sending ntfy payload to {url}")
+        try:
+            async with httpx.AsyncClient(timeout=self._http_timeout_sec) as client:
+                resp = await client.post(
+                    url,
+                    content=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
+                    headers=headers,
+                )
+            if resp.status_code >= 400:
+                logger.error(
+                    f"ntfy push failed: status={resp.status_code}, body={resp.text}"
+                )
+                return False, f"HTTP {resp.status_code}"
+        except Exception as e:
+            logger.error(f"ntfy push exception: {e}")
+            return False, str(e)
+
+        return True, ""
+
+    async def _wait_for_battery_reply(self, request_id: str) -> dict | None:
+        """Poll battery reply topic and return parsed JSON payload for the request id."""
+        if not self._battery_reply_topic:
+            return None
+
+        topic_escaped = quote(self._battery_reply_topic, safe="")
+        url = f"{self._ntfy_server}/{topic_escaped}/json"
+        headers = self._build_ntfy_headers(title="", tags="")
+        headers.pop("Content-Type", None)
+        headers.pop("Title", None)
+        headers.pop("Tags", None)
+
+        deadline = time.monotonic() + self._battery_wait_timeout_sec
+        logger.info(
+            f"waiting battery reply: request_id={request_id}, "
+            f"topic={self._battery_reply_topic}, timeout={self._battery_wait_timeout_sec}s"
+        )
+
+        async with httpx.AsyncClient(
+            timeout=max(5, self._battery_wait_timeout_sec + 2)
+        ) as client:
+            while True:
+                remain = int(deadline - time.monotonic())
+                if remain <= 0:
+                    logger.warning(f"battery reply timeout: request_id={request_id}")
+                    return None
+
+                poll_timeout = min(10, remain)
+                params = {
+                    "poll": "1",
+                    "timeout": f"{poll_timeout}s",
+                }
+
+                try:
+                    resp = await client.get(url, params=params, headers=headers)
+                except Exception as e:
+                    logger.error(f"battery reply poll exception: {e}")
+                    return None
+
+                if resp.status_code >= 400:
+                    logger.error(
+                        f"battery reply poll failed: status={resp.status_code}, body={resp.text}"
+                    )
+                    return None
+
+                try:
+                    evt = resp.json()
+                except Exception:
+                    logger.warning(
+                        f"battery reply parse failed: non-json body={resp.text[:200]}"
+                    )
+                    continue
+
+                if evt.get("event") != "message":
+                    logger.debug(f"battery reply ignored event: {evt.get('event')}")
+                    continue
+
+                message = evt.get("message", "")
+                try:
+                    payload = json.loads(message)
+                except Exception:
+                    logger.debug(
+                        f"battery reply ignored non-json message: {message[:120]}"
+                    )
+                    continue
+
+                if not isinstance(payload, dict):
+                    continue
+
+                data = (
+                    payload.get("data") if isinstance(payload.get("data"), dict) else {}
+                )
+                msg_request_id = data.get("request_id") or payload.get("request_id")
+                if msg_request_id != request_id:
+                    logger.debug(
+                        f"battery reply ignored by request_id mismatch: "
+                        f"want={request_id}, got={msg_request_id}"
+                    )
+                    continue
+
+                logger.info(f"battery reply matched: request_id={request_id}")
+                return payload
 
     @llm_tool(name="tasker_set_alarm")
     async def tasker_set_alarm(
@@ -104,35 +332,147 @@ class TaskerConnectPlugin(Star):
             },
         }
 
-        topic = quote(self._ntfy_topic, safe="")
-        url = f"{self._ntfy_server}/{topic}"
-        headers = {
-            "Content-Type": "application/json; charset=utf-8",
-            "Title": "AstrBot Alarm",
-            "Tags": "alarm,astrbot,tasker",
-        }
-        if self._ntfy_token:
-            headers["Authorization"] = f"Bearer {self._ntfy_token}"
-
-        logger.debug(f"sending ntfy push to {url}")
-        try:
-            async with httpx.AsyncClient(timeout=self._http_timeout_sec) as client:
-                resp = await client.post(
-                    url,
-                    content=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
-                    headers=headers,
-                )
-            if resp.status_code >= 400:
-                logger.error(
-                    f"ntfy push failed: status={resp.status_code}, body={resp.text}"
-                )
-                return f"推送失败：HTTP {resp.status_code}"
-        except Exception as e:
-            logger.error(f"ntfy push exception: {e}")
-            return f"推送失败：{str(e)}"
+        ok, err = await self._post_ntfy_payload(
+            topic=self._ntfy_topic,
+            payload=payload,
+            title="AstrBot Alarm",
+            tags="alarm,astrbot,tasker",
+        )
+        if not ok:
+            return f"推送失败：{err}"
 
         logger.info(
             f"ntfy push success: time={hour_int:02d}:{minute_int:02d}, "
             f"topic={self._ntfy_topic}"
         )
         return f"推送成功：闹钟指令 {hour_int:02d}:{minute_int:02d} 已下发"
+
+    @llm_tool(name="tasker_get_battery")
+    async def tasker_get_battery(self, event: AstrMessageEvent) -> str:
+        """查询远端 Android 设备电量（通过回传 topic 等待结果）。"""
+        self._refresh_config_runtime()
+
+        if not self._ntfy_topic:
+            return "查询失败：请先配置 ntfy_topic。"
+        if not self._battery_reply_topic:
+            return "查询失败：请先配置 battery_reply_topic。"
+
+        request_id = secrets.token_hex(8)
+        req_payload = {
+            "action": "get_battery",
+            "data": {
+                "request_id": request_id,
+                "reply_topic": self._battery_reply_topic,
+            },
+        }
+
+        ok, err = await self._post_ntfy_payload(
+            topic=self._ntfy_topic,
+            payload=req_payload,
+            title="AstrBot Battery Query",
+            tags="battery,astrbot,tasker",
+        )
+        if not ok:
+            return f"查询失败：电量请求下发失败（{err}）"
+
+        reply = await self._wait_for_battery_reply(request_id)
+        if reply is None:
+            return (
+                "查询超时：未收到设备电量回传。"
+                f"请确认 Tasker 正在监听 {self._ntfy_topic} 并回传到 {self._battery_reply_topic}。"
+            )
+
+        data = reply.get("data") if isinstance(reply.get("data"), dict) else {}
+        level = data.get("level", data.get("battery", "未知"))
+        is_charging = data.get("is_charging", data.get("charging", None))
+
+        charging_text = "未知"
+        if isinstance(is_charging, bool):
+            charging_text = "充电中" if is_charging else "未充电"
+
+        return f"设备当前电量：{level}%（{charging_text}）"
+
+    @llm_tool(name="tasker_get_location")
+    async def tasker_get_location(self, event: AstrMessageEvent) -> str:
+        """查询远端 Android 设备定位（通过回传 topic 等待结果）。"""
+        self._refresh_config_runtime()
+
+        if not self._ntfy_topic:
+            return "查询失败：请先配置 ntfy_topic。"
+        if not self._battery_reply_topic:
+            return "查询失败：请先配置 battery_reply_topic。"
+
+        request_id = secrets.token_hex(8)
+        req_payload = {
+            "action": "get_location",
+            "data": {
+                "request_id": request_id,
+                "reply_topic": self._battery_reply_topic,
+            },
+        }
+
+        ok, err = await self._post_ntfy_payload(
+            topic=self._ntfy_topic,
+            payload=req_payload,
+            title="AstrBot Location Query",
+            tags="location,astrbot,tasker",
+        )
+        if not ok:
+            return f"查询失败：定位请求下发失败（{err}）"
+
+        reply = await self._wait_for_battery_reply(request_id)
+        if reply is None:
+            return (
+                "查询超时：未收到设备定位回传。"
+                f"请确认 Tasker 正在监听 {self._ntfy_topic} 并回传到 {self._battery_reply_topic}。"
+            )
+
+        data = reply.get("data") if isinstance(reply.get("data"), dict) else {}
+        latitude_raw = data.get("latitude", data.get("lat", None))
+        longitude_raw = data.get("longitude", data.get("lng", None))
+        address = str(data.get("address", data.get("addr", ""))).strip()
+
+        try:
+            latitude = float(latitude_raw)
+            longitude = float(longitude_raw)
+        except (TypeError, ValueError):
+            if address:
+                return f"设备当前位置：{address}"
+            return "定位查询成功，但回传中未包含有效经纬度。"
+
+        converted = await self._amap_convert_coord(
+            longitude=longitude, latitude=latitude
+        )
+        if converted is not None:
+            longitude, latitude = converted
+            logger.info(
+                f"location converted by amap: lon={longitude:.6f}, lat={latitude:.6f}, coordsys={self._amap_coordsys}"
+            )
+
+        amap_address = await self._amap_reverse_geocode(
+            longitude=longitude, latitude=latitude
+        )
+        if amap_address:
+            address = amap_address
+
+        if address:
+            return f"设备当前位置：{address}（{latitude:.6f}, {longitude:.6f}）"
+        return f"设备当前位置坐标：纬度 {latitude:.6f}，经度 {longitude:.6f}"
+
+    @filter.command("电量查询")
+    async def tasker_battery_command(self, event: AstrMessageEvent):
+        """手动触发远端设备电量查询。"""
+        result = await self.tasker_get_battery(event)
+        yield event.plain_result(result)
+
+    @filter.command("开盒")
+    async def tasker_location_command(self, event: AstrMessageEvent):
+        """手动触发远端设备定位查询。"""
+        result = await self.tasker_get_location(event)
+        yield event.plain_result(result)
+
+    @filter.command("查找定位")
+    async def tasker_location_command_alias(self, event: AstrMessageEvent):
+        """手动触发远端设备定位查询（别名指令）。"""
+        result = await self.tasker_get_location(event)
+        yield event.plain_result(result)

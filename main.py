@@ -536,7 +536,11 @@ class TaskerConnectPlugin(Star):
         if isinstance(status, int) and status in status_map:
             status_text = status_map[status]
         elif isinstance(status, str):
-            status_text = status
+            status_clean = status.strip()
+            if status_clean.isdigit():
+                status_text = status_map.get(int(status_clean), "未知")
+            else:
+                status_text = status_clean or "未知"
 
         return f"设备当前电量：{level}%（{status_text}）"
 

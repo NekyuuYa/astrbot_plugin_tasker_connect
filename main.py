@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import re
 import secrets
 import string
 import time
@@ -298,10 +299,31 @@ class TaskerConnectPlugin(Star):
                     data = resp.json()
                     logger.debug(f"polling response data: {str(data)[:300]}")
                 except Exception as e:
-                    logger.warning(
-                        f"battery reply parse failed: non-json body={resp.text[:200]}, error={e}"
-                    )
-                    continue
+                    body_text = resp.text.strip()
+                    ndjson_events = []
+                    if body_text:
+                        for line in body_text.splitlines():
+                            line = line.strip()
+                            if not line:
+                                continue
+                            try:
+                                obj = json.loads(line)
+                            except Exception:
+                                ndjson_events = []
+                                break
+                            if isinstance(obj, dict):
+                                ndjson_events.append(obj)
+
+                    if ndjson_events:
+                        data = ndjson_events
+                        logger.debug(
+                            f"polling response parsed as ndjson with {len(ndjson_events)} events"
+                        )
+                    else:
+                        logger.warning(
+                            f"battery reply parse failed: non-json body={resp.text[:200]}, error={e}"
+                        )
+                        continue
 
                 # Handle both single message and multi-message responses
                 messages = data if isinstance(data, list) else [data]
@@ -328,11 +350,10 @@ class TaskerConnectPlugin(Star):
                         continue
 
                     logger.debug(f"parsing message: {message[:200]}")
-                    try:
-                        payload = json.loads(message)
-                    except Exception as e:
+                    payload = self._parse_ntfy_message_payload(message)
+                    if payload is None:
                         logger.warning(
-                            f"battery reply ignored malformed json message: {message[:120]}, error={e}"
+                            f"battery reply ignored malformed json message: {message[:120]}"
                         )
                         continue
 
@@ -370,6 +391,54 @@ class TaskerConnectPlugin(Star):
                         f"action={payload.get('action')}"
                     )
                     return payload
+
+    def _parse_ntfy_message_payload(self, message: str) -> dict | None:
+        """Parse ntfy message payload with compatibility for escaped JSON text."""
+        candidate = str(message).strip()
+        if not candidate:
+            return None
+
+        # Case 1: normal JSON object string.
+        try:
+            obj = json.loads(candidate)
+            if isinstance(obj, dict):
+                return obj
+            if isinstance(obj, str):
+                # Case 2: double-encoded JSON string.
+                obj2 = json.loads(obj)
+                if isinstance(obj2, dict):
+                    return obj2
+        except Exception:
+            pass
+
+        # Case 3: escaped object text like {\"action\":...} from some Tasker setups.
+        normalized = candidate.replace(r"\"", '"')
+        if normalized != candidate:
+            try:
+                obj = json.loads(normalized)
+                if isinstance(obj, dict):
+                    return obj
+            except Exception:
+                pass
+
+        # Case 4: recover common unquoted request_id token and retry once.
+        repaired = re.sub(
+            r'("request_id"\s*:\s*)([A-Za-z0-9_-]+)',
+            r'\1"\2"',
+            normalized,
+        )
+        if repaired != normalized:
+            try:
+                obj = json.loads(repaired)
+                if isinstance(obj, dict):
+                    logger.warning(
+                        "battery reply message repaired by auto-quoting request_id"
+                    )
+                    return obj
+            except Exception:
+                pass
+
+        return None
 
     @llm_tool(name="tasker_set_alarm")
     async def tasker_set_alarm(

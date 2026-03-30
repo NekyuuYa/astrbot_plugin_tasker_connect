@@ -582,14 +582,11 @@ class TaskerConnectPlugin(Star):
         data = reply.get("data") if isinstance(reply.get("data"), dict) else {}
         latitude_raw = data.get("latitude", data.get("lat", None))
         longitude_raw = data.get("longitude", data.get("lng", None))
-        address = str(data.get("address", data.get("addr", ""))).strip()
 
         try:
             latitude = float(latitude_raw)
             longitude = float(longitude_raw)
         except (TypeError, ValueError):
-            if address:
-                return f"设备当前位置：{address}"
             return "定位查询成功，但回传中未包含有效经纬度。"
 
         converted = await self._amap_convert_coord(
@@ -605,10 +602,7 @@ class TaskerConnectPlugin(Star):
             longitude=longitude, latitude=latitude
         )
         if amap_address:
-            address = amap_address
-
-        if address:
-            return f"设备当前位置：{address}（{latitude:.6f}, {longitude:.6f}）"
+            return f"设备当前位置：{amap_address}（{latitude:.6f}, {longitude:.6f}）"
         return f"设备当前位置坐标：纬度 {latitude:.6f}，经度 {longitude:.6f}"
 
     @filter.command("电量查询")

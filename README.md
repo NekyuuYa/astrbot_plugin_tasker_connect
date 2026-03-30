@@ -114,11 +114,12 @@
 	"data": {
 		"request_id": "a1b2c3d4e5f6",
 		"latitude": 31.2304,
-		"longitude": 121.4737,
-		"address": "上海市黄浦区..."
+      "longitude": 121.4737
 	}
 }
 ```
+
+说明：Tasker 回传中无需 `address` 字段，插件会基于经纬度自动进行坐标转换与逆地理编码（配置了 `amap_api_key` 时）。
 
 ## 配置项
 

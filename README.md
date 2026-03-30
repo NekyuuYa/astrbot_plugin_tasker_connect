@@ -145,9 +145,14 @@
 
 ### 消息未被接收常见问题排查
 
-1. **检查 Tasker 回传的消息格式**
+1. **检查 Tasker 回传的消息格式** ⚠️ 最常见的问题
+   - ❗ **request_id 必须是字符串**，不要是数字：
+     ```json
+     正确: {"action": "battery_status", "data": {"request_id": "e882d17a84db5a9e", ...}}
+     错误: {"action": "battery_status", "data": {"request_id": e882d17a84db5a9e, ...}}
+     ```
    - 确保 Tasker 发送的 `request_id` 与插件生成的一致
-   - 验证消息体格式：`{"action": "battery_status", "data": {"request_id": "xxx", ...}}`
+   - 验证消息体格式完整正确，所有字符串值都必须有引号
    - 消息的 `message` 字段必须是 JSON 字符串（不是对象），例如：`"message": "{\"action\":\"battery_status\",...}"`
 
 2. **检查回传 topic 配置**
@@ -155,17 +160,27 @@
    - Tasker 必须推送到完全相同的 topic 名称
    - 避免 topic 名称包含特殊字符或空格
 
-3. **检查网络连接**
+3. **ntfy.sh 速率限制问题** ⚠️
+   - ntfy.sh 公共实例有速率限制（HTTP 429 错误）
+   - 如果频繁触发查询，会被限流。请稍等片刻后重试
+   - 建议：
+     - 使用自建 ntfy 实例（无限制）
+     - 或购买 ntfy.sh 付费计划
+     - 或减少查询频率，避免短时间内多次查询
+   - 插件遇到 429 错误会自动退避重试
+
+4. **检查网络连接**
    - 确认 AstrBot 和 Tasker 都能访问 ntfy 服务器
    - 在手机浏览器访问 `https://ntfy.sh/your_reply_topic/json` 测试连接
    - 如果使用自建 ntfy，检查网络可达性和认证
 
-4. **检查日志**
+5. **检查日志**
    - 查看 AstrBot 日志中是否有 `waiting battery reply` 的日志
    - 如果看到 `battery reply poll exception` 或 `battery reply timeout`，表示 polling 超时
    - 如果看到 `request_id mismatch`，说明消息到达但 request_id 不匹配
+   - 如果看到 `rate limit hit (429)`，说明 ntfy.sh 限流了，需要等待
 
-5. **调试 ntfy 消息**
+6. **调试 ntfy 消息**
    - 使用 curl 手动向 ntfy 推送测试消息：
      ```bash
      curl -X POST https://ntfy.sh/your_reply_topic \

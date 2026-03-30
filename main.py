@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import secrets
 import string
@@ -243,6 +244,7 @@ class TaskerConnectPlugin(Star):
 
         poll_id = None
         seen_ids = set()
+        rate_limit_hit = False
         async with httpx.AsyncClient(
             timeout=max(5, self._battery_wait_timeout_sec + 2)
         ) as client:
@@ -259,6 +261,7 @@ class TaskerConnectPlugin(Star):
                 params = {
                     "poll": "1",
                     "timeout": f"{poll_timeout}s",
+                    "limit": "100",  # Get up to 100 messages per poll
                 }
                 if poll_id:
                     params["poll"] = poll_id
@@ -269,6 +272,15 @@ class TaskerConnectPlugin(Star):
                 except Exception as e:
                     logger.error(f"battery reply poll exception: {e}")
                     return None
+
+                if resp.status_code == 429:
+                    if not rate_limit_hit:
+                        logger.warning(
+                            "ntfy.sh rate limit hit (429). Retrying with longer intervals..."
+                        )
+                        rate_limit_hit = True
+                    await asyncio.sleep(2)  # Back off
+                    continue
 
                 if resp.status_code >= 400:
                     logger.error(
@@ -319,8 +331,8 @@ class TaskerConnectPlugin(Star):
                     try:
                         payload = json.loads(message)
                     except Exception as e:
-                        logger.debug(
-                            f"battery reply ignored non-json message: {message[:120]}, error={e}"
+                        logger.warning(
+                            f"battery reply ignored malformed json message: {message[:120]}, error={e}"
                         )
                         continue
 
@@ -336,17 +348,20 @@ class TaskerConnectPlugin(Star):
                     msg_request_id = data_dict.get("request_id") or payload.get(
                         "request_id"
                     )
-                    seen_ids.add(msg_request_id)
+
+                    # Convert request_id to string for comparison
+                    msg_request_id_str = str(msg_request_id) if msg_request_id else None
+                    seen_ids.add(msg_request_id_str)
 
                     logger.debug(
                         f"message payload: action={payload.get('action')}, "
-                        f"request_id={msg_request_id}, want_request_id={request_id}"
+                        f"request_id={msg_request_id_str}, want_request_id={request_id}"
                     )
 
-                    if msg_request_id != request_id:
+                    if msg_request_id_str != request_id:
                         logger.debug(
                             f"battery reply ignored by request_id mismatch: "
-                            f"want={request_id}, got={msg_request_id}"
+                            f"want={request_id}, got={msg_request_id_str}"
                         )
                         continue
 

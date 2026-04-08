@@ -486,7 +486,7 @@ class TaskerConnectPlugin(Star):
 
     @llm_tool(name="tasker_get_battery")
     async def tasker_get_battery(self, event: AstrMessageEvent) -> str:
-        """查询远端 Android 设备电量（通过回传 topic 等待结果）。"""
+        """查询远端契约者 Android 设备电量（通过回传 topic 等待结果）。"""
         self._refresh_config_runtime()
 
         if not self._ntfy_topic:
@@ -546,7 +546,7 @@ class TaskerConnectPlugin(Star):
 
     @llm_tool(name="tasker_get_location")
     async def tasker_get_location(self, event: AstrMessageEvent) -> str:
-        """查询远端 Android 设备定位（通过回传 topic 等待结果）。"""
+        """查询远端 Android 设备定位（通过回传 topic 等待结果）。用于获取契约者当前位置"""
         self._refresh_config_runtime()
 
         if not self._ntfy_topic:
